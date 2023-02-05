@@ -808,7 +808,6 @@ class Backtest:
         return self.def_txn
 
     def get_def_report(self):
-
         _output = create_algo_analytics(self.def_txn)
         return _output
 
@@ -817,8 +816,10 @@ class Backtest:
         param_grid = ParameterGrid(param_dic)
         for dict_ in param_grid:
             _out = self.func(self.df, **dict_)
-            _output = create_algo_analytics(_out)
-            _output = pd.Series(_output)
+            _output = pd.Series()
+            if len(_out) > 0:
+                _output = create_algo_analytics(_out)
+                _output = pd.Series(_output)
             _params = pd.Series(dict_)
             _out = _params.append(_output)
             _out = pd.Series(_out).to_frame().T
