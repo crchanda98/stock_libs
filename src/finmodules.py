@@ -7,6 +7,21 @@ import glob
 import requests
 import empyrical
 from sklearn.model_selection import ParameterGrid
+from functools import partial
+from itertools import repeat, product
+from multiprocessing import Pool, freeze_support
+from pandarallel import pandarallel
+
+
+def full_stoch(_df, _timeperiod=14, _smoothk=7, _smoothd=3):
+    _df["14-high"] = _df["high"].rolling(_timeperiod).max()
+    _df["14-low"] = _df["low"].rolling(_timeperiod).min()
+    _df["slowK"] = (
+        (_df["close"] - _df["14-low"]) * 100 / (_df["14-high"] - _df["14-low"])
+    )
+    _df["slowK"] = _df["slowK"].rolling(_smoothk).mean()
+    _df["slowD"] = _df["slowK"].rolling(_smoothd).mean()
+    return _df[["slowK", "slowD"]]
 
 
 def downsample_OHLC(_df, _interval_min="2min"):
@@ -796,6 +811,8 @@ class Backtest:
         self.func = None
         self.default_param = None
         self.param_dic = None
+        self.parallel = False
+        self.map = Pool().map
 
     def backtest(self, df, func, X=None):
         self.func = func
@@ -811,18 +828,40 @@ class Backtest:
         _output = create_algo_analytics(self.def_txn)
         return _output
 
-    def bruteforce(self, param_dic):
+    def bruteforce(self, param_dic, parallel):
         _final_out = []
         param_grid = ParameterGrid(param_dic)
-        for dict_ in param_grid:
-            _out = self.func(self.df, **dict_)
-            _output = pd.Series()
-            if len(_out) > 0:
-                _output = create_algo_analytics(_out)
-                _output = pd.Series(_output)
-            _params = pd.Series(dict_)
-            _out = _params.append(_output)
-            _out = pd.Series(_out).to_frame().T
-            _final_out.append(_out)
-        _final_out = pd.concat(_final_out).reset_index()
+        _out_list = []
+        if parallel:
+            pandarallel.initialize(nb_workers=6)
+            print("In par")
+            keys, values = zip(*param_dic.items())
+            permutations_dicts = [dict(zip(keys, v)) for v in product(*values)]
+            _final_out = pd.DataFrame.from_records(permutations_dicts)
+            _final_out["analytics"] = _final_out.parallel_apply(
+                lambda x: create_algo_analytics(self.func(self.df, **x.to_dict())),
+                axis=1,
+            )
+            _final_out = pd.concat(
+                [
+                    _final_out.drop(["analytics"], axis=1),
+                    _final_out["analytics"].apply(pd.Series),
+                ],
+                axis=1,
+            )
+        else:
+            print("In ser")
+            for dict_ in param_grid:
+                _out_list.append(self.func(self.df, **dict_))
+            for _i, dict_ in enumerate(param_grid):
+                _out = _out_list[_i]
+                _output = pd.Series()
+                if len(_out) > 0:
+                    _output = create_algo_analytics(_out)
+                    _output = pd.Series(_output)
+                _params = pd.Series(dict_)
+                _out = _params.append(_output)
+                _out = pd.Series(_out).to_frame().T
+                _final_out.append(_out)
+            _final_out = pd.concat(_final_out).reset_index()
         return _final_out
